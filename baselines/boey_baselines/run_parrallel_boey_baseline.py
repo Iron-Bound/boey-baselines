@@ -14,7 +14,7 @@ from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
 from stable_baselines3.common.utils import set_random_seed
 from stable_baselines3.common.callbacks import CheckpointCallback, CallbackList
 from baselines.boey_baselines.custom_network import CustomCombinedExtractorV2
-from baselines.tensorboard_callback import TensorboardCallback
+from baselines.boey_baselines.tensorboard_callback import TensorboardCallback
 
 def make_env(rank, env_conf, seed=0):
     """
