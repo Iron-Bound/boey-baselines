@@ -203,7 +203,9 @@ class RedGymEnvV3(Env):
         self.reset()
 
     def save_state(self):
-        state = self.pyboy.save_state(BytesIO())
+        state = BytesIO()
+        self.pyboy.save_state(state)
+        state.seek(0)
         self.initial_states.append(state)
 
     def load_random_state(self):
