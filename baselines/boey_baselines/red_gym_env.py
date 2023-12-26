@@ -80,10 +80,10 @@ class RedGymEnvV3(Env):
         self.all_runs = []
         self.n_pokemon_features = 23
 
-        with open(self.init_state, "rb") as f:
-            initial_state = BytesIO(f.read())
-
-        self.initial_states = [initial_state]
+        self.initial_states = []
+         with open(self.init_state, "rb") as f:
+            state = BytesIO(f.read())
+            self.initial_states.append(state)       
 
         # Set this in SOME subclasses
         self.metadata = {"render.modes": []}
@@ -210,7 +210,9 @@ class RedGymEnvV3(Env):
 
     def load_random_state(self):
         rand_idx = random.randint(0, len(self.initial_states) - 1)
-        self.pyboy.load_state(self.initial_states[rand_idx])
+        state = self.initial_states[rand_idx]
+        state.seek(0)
+        self.pyboy.load_state(state)
 
     def reset(self, seed=None):
         self.seed = seed
@@ -517,7 +519,7 @@ class RedGymEnvV3(Env):
         x_pos = self.read_m(0xD362)
         y_pos = self.read_m(0xD361)
         map_n = self.read_m(0xD35E)
-        self.seen_coords.add((map_n, x, y))
+        self.seen_coords.add((map_n, x_pos, y_pos))
 
     def update_reward(self):
         # compute reward
