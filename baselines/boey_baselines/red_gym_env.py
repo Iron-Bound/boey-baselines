@@ -13,7 +13,8 @@ from einops import rearrange
 import matplotlib.pyplot as plt
 from skimage.transform import resize
 from pyboy import PyBoy
-import hnswlib
+
+# import hnswlib
 import mediapy as media
 import pandas as pd
 
@@ -212,15 +213,11 @@ class RedGymEnvV3(Env):
     def reset(self, seed=None):
         self.seed = seed
 
-        if self.use_screen_explore:
-            self.init_knn()
-        else:
-            self.init_map_mem()
-
         # restart game, skipping credits
         self.load_random_state()
 
         # map state saves
+        self.seen_coords = set()
         self.seen_maps = set()
         self.prev_map_n = self.read_m(0xD35E)
 
@@ -243,7 +240,7 @@ class RedGymEnvV3(Env):
         self.last_num_poke = 1
         self.total_healing_rew = 0
         self.died_count = 0
-        self.prev_knn_rew = 0
+        # self.prev_knn_rew = 0
         self.visited_pokecenter_list = []
         self.last_10_map_ids = np.zeros(10, dtype=np.uint8)
         self.last_10_coords = np.zeros((10, 2), dtype=np.uint8)
@@ -277,19 +274,6 @@ class RedGymEnvV3(Env):
 
         return self.render(), {}
 
-    def init_knn(self):
-        # Declaring index
-        self.knn_index = hnswlib.Index(
-            space="l2", dim=self.vec_dim
-        )  # possible options are l2, cosine or ip
-        # Initing index - the maximum number of elements should be known beforehand
-        self.knn_index.init_index(
-            max_elements=self.num_elements, ef_construction=100, M=16
-        )
-
-    def init_map_mem(self):
-        self.seen_coords = {}
-
     def render(self, reduce_res=True, add_memory=True, update_mem=True):
         game_pixels_render = self.screen.screen_ndarray()  # (144, 160, 3)
         if reduce_res:
@@ -303,18 +287,6 @@ class RedGymEnvV3(Env):
                 reduced_frame = game_pixels_render
                 self.recent_frames[0] = reduced_frame
             if add_memory:
-                # pad = np.zeros(
-                #     shape=(self.mem_padding, self.output_shape[1], 3),
-                #     dtype=np.uint8)
-                # game_pixels_render = np.concatenate(
-                #     (
-                #         self.create_exploration_memory(),
-                #         pad,
-                #         self.create_recent_memory(),
-                #         pad,
-                #         rearrange(self.recent_frames, 'f h w c -> (f h) w c')
-                #     ),
-                #     axis=0)
                 game_pixels_render = {
                     "image": self.recent_frames,
                     "vector": self.get_all_raw_obs(),
@@ -369,12 +341,7 @@ class RedGymEnvV3(Env):
         self.recent_frames = np.roll(self.recent_frames, 1, axis=0)
         obs_memory = self.render()
 
-        if self.use_screen_explore:
-            # trim off memory from frame for knn index
-            obs_flat = obs_memory["image"].flatten().astype(np.float32)
-            self.update_frame_knn_index(obs_flat)
-        else:
-            self.update_seen_coords()
+        self.update_seen_coords()
 
         self.update_heal_reward()
         self.update_num_poke()
@@ -382,12 +349,6 @@ class RedGymEnvV3(Env):
         new_reward = self.update_reward()
 
         self.last_health = self.read_hp_fraction()
-
-        # shift over short term reward memory
-        # self.recent_memory = np.roll(self.recent_memory, 3)
-        # self.recent_memory[0, 0] = min(new_prog[0] * 64, 255)
-        # self.recent_memory[0, 1] = min(new_prog[1] * 64, 255)
-        # self.recent_memory[0, 2] = min(new_prog[2] * 128, 255)
 
         self.update_past_events()
         self.past_events_string = self.all_events_string
@@ -521,29 +482,21 @@ class RedGymEnvV3(Env):
         # self.model_frame_writer.add_image(self.render(reduce_res=True, update_mem=False))
 
     def append_agent_stats(self, action):
-        x_pos = self.read_m(0xD362)
-        y_pos = self.read_m(0xD361)
-        map_n = self.read_m(0xD35E)
         levels = [
             self.read_m(a) for a in [0xD18C, 0xD1B8, 0xD1E4, 0xD210, 0xD23C, 0xD268]
         ]
-        if self.use_screen_explore:
-            expl = ("frames", self.knn_index.get_current_count())
-        else:
-            expl = ("coord_count", len(self.seen_coords))
+        expl = ("coord_count", len(self.seen_coords))
         self.agent_stats.append(
             {
                 "step": self.step_count,
-                "x": x_pos,
-                "y": y_pos,
-                "map": map_n,
+                "map_count": len(self.seen_maps),
                 "last_action": action,
                 "pcount": self.read_m(0xD163),
                 "levels": levels,
                 "ptypes": self.read_party(),
                 "hp": self.read_hp_fraction(),
                 expl[0]: expl[1],
-                "prev_knn_rew": self.prev_knn_rew,
+                # "prev_knn_rew": self.prev_knn_rew,
                 # 'deaths': self.died_count,
                 "badge": self.get_badges(),
                 "eventr": self.progress_reward["event"],
@@ -558,37 +511,11 @@ class RedGymEnvV3(Env):
             }
         )
 
-    def update_frame_knn_index(self, frame_vec):
-        # if self.get_levels_sum() >= 22 and not self.levels_satisfied:
-        #     self.levels_satisfied = True
-        #     self.base_explore = self.knn_index.get_current_count()
-        #     self.init_knn()
-
-        if self.knn_index.get_current_count() == 0:
-            # if index is empty add current frame
-            self.knn_index.add_items(
-                frame_vec, np.array([self.knn_index.get_current_count()])
-            )
-        else:
-            # check for nearest frame and add if current
-            labels, distances = self.knn_index.knn_query(frame_vec, k=1)
-            if distances[0][0] > self.similar_frame_dist:
-                # print(f"distances[0][0] : {distances[0][0]} similar_frame_dist : {self.similar_frame_dist}")
-                self.knn_index.add_items(
-                    frame_vec, np.array([self.knn_index.get_current_count()])
-                )
-
     def update_seen_coords(self):
         x_pos = self.read_m(0xD362)
         y_pos = self.read_m(0xD361)
         map_n = self.read_m(0xD35E)
-        coord_string = f"x:{x_pos} y:{y_pos} m:{map_n}"
-        # if self.get_levels_sum() >= 22 and not self.levels_satisfied:
-        #     self.levels_satisfied = True
-        #     self.base_explore = len(self.seen_coords)
-        #     self.seen_coords = {}
-
-        self.seen_coords[coord_string] = self.step_count
+        self.seen_coords.add((map_n, x, y))
 
     def update_reward(self):
         # compute reward
@@ -612,7 +539,7 @@ class RedGymEnvV3(Env):
         return (
             prog["level"] * 100 / self.reward_scale,
             self.read_hp_fraction() * 2000,
-            prog["explore"] * 150 / (self.explore_weight * self.reward_scale),
+            prog["explore"] * 150 / self.reward_scale,
         )
         # (prog['events'],
         # prog['levels'] + prog['party_xp'],
@@ -752,22 +679,6 @@ class RedGymEnvV3(Env):
     def get_early_done_reward(self):
         return self.early_done * -0.2
 
-    def get_knn_reward(self, last_event_rew):
-        if last_event_rew != self.max_event_rew:
-            # event reward increased, reset exploration
-            if self.use_screen_explore:
-                self.prev_knn_rew += self.knn_index.get_current_count()
-                self.knn_index.clear_index()
-            else:
-                self.prev_knn_rew += len(self.seen_coords)
-                self.seen_coords = {}
-        cur_size = (
-            self.knn_index.get_current_count()
-            if self.use_screen_explore
-            else len(self.seen_coords)
-        )
-        return (self.prev_knn_rew + cur_size) * self.explore_weight * 0.005  # 0.003
-
     def get_visited_pokecenter_reward(self):
         # reward for first time healed in pokecenter
         last_pokecenter_id = self.get_last_pokecenter_id()
@@ -883,7 +794,7 @@ class RedGymEnvV3(Env):
             #'op_poke':self.max_opponent_poke * 800,
             #'money': money * 3,
             #'seen_poke': self.reward_scale * seen_poke_count * 400,
-            "explore": self.get_knn_reward(last_event_rew),
+            "explore": len(self.seen_coords) * 0.01,
             "visited_pokecenter": self.get_visited_pokecenter_reward(),
             "hm": self.get_hm_rewards(),
             "hm_move": self.get_hm_move_reward(),
@@ -1082,17 +993,6 @@ class RedGymEnvV3(Env):
                 return chosen_mon - 1
         return -1
 
-    # def get_swap_pokemon_obs(self):
-    #     is_in_swap_mon_party_menu = self.read_m(0xd07d) == 0x04
-    #     if is_in_swap_mon_party_menu:
-    #         chosen_mon = self.read_m(0xcc35)
-    #         if chosen_mon == 0:
-    #             print(f'\nsomething went wrong, chosen_mon is 0')
-    #         else:
-    #             # print(f'chose mon {chosen_mon}')
-    #             return self.one_hot_encoding(chosen_mon - 1, 6, start_zero=True)
-    #     return [0] * 6
-
     def get_last_pokecenter_obs(self):
         return self.get_last_pokecenter_list()
 
@@ -1260,16 +1160,6 @@ class RedGymEnvV3(Env):
             pps = [self.read_m(addr + i) for i in range(4)]
             result.extend(pps)
         return result
-
-    # def get_all_move_pps_obs(self):
-    #     result = []
-    #     result.extend(self.get_party_move_pps_obs())
-    #     result.extend(self.get_opp_move_pps_obs())
-    #     result.extend(self.get_battle_move_pps_obs())
-    #     result = np.array(result, dtype=np.float32) / 30
-    #     # every elemenet max is 1
-    #     result = np.clip(result, 0, 1)
-    #     return result
 
     def get_party_level_obs(self):
         # D18C level

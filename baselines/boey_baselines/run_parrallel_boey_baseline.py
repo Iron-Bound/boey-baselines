@@ -82,7 +82,7 @@ if __name__ == "__main__":
         "action_freq": 24,
         "init_state": "has_pokedex_nballs.state",
         "max_steps": ep_length,
-        "print_rewards": True,
+        "print_rewards": False,
         "save_video": False,
         "fast_video": True,
         "session_path": sess_path,
@@ -95,7 +95,7 @@ if __name__ == "__main__":
         "restricted_start_menu": True,
         "randomize_first_ep_split_cnt": num_cpu,
         # 'start_from_state_dir': state_dir, 'save_state_dir': state_dir,
-        "explore_weight": 1.5,  # 3
+        "explore_weight": 1,  # 3
     }
 
     print(env_config)
